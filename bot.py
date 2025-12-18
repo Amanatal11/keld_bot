@@ -1,10 +1,16 @@
 import operator
 import random
+import os
 from typing import Annotated, List, Literal, TypedDict
 from pydantic import BaseModel
 from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
 from pyjokes import get_joke
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # 1. Define the State
 class Joke(BaseModel):
@@ -36,16 +42,32 @@ def show_menu(state: JokeState) -> dict:
     return {"jokes_choice": user_input}
 
 def fetch_joke(state: JokeState) -> dict:
-    if state.language == "am":
-        amharic_jokes = [
-            "አንድ ሰው ወደ ሐኪም ሄዶ 'ዶክተር፣ እግሬን ሳነሳ ያመኛል' አለው። ዶክተሩም 'እንግዲያውስ አታንሳው' አለው።",
-            "መምህር፡ 'አባይ ወንዝ የት ይገኛል?' ተማሪ፡ 'መሬት ላይ!'",
-            "ሚስት፡ 'ዛሬ የጋብቻ በዓላችን ነው፣ ዶሮ እንረድ?' ባል፡ 'ለተፈጠረው ስህተት ዶሮው ምን አጠፋ?'"
-        ]
-        joke_text = random.choice(amharic_jokes)
+    # Check for API key
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        print("\n⚠️ OPENAI_API_KEY not found. Falling back to pyjokes/custom list.")
+        if state.language == "am":
+            amharic_jokes = [
+                "አንድ ሰው ወደ ሐኪም ሄዶ 'ዶክተር፣ እግሬን ሳነሳ ያመኛል' አለው። ዶክተሩም 'እንግዲያውስ አታንሳው' አለው።",
+                "መምህር፡ 'አባይ ወንዝ የት ይገኛል?' ተማሪ፡ 'መሬት ላይ!'",
+                "ሚስት፡ 'ዛሬ የጋብቻ በዓላችን ነው፣ ዶሮ እንረድ?' ባል፡ 'ለተፈጠረው ስህተት ዶሮው ምን አጠፋ?'"
+            ]
+            joke_text = random.choice(amharic_jokes)
+        else:
+            joke_text = get_joke(language=state.language, category=state.category)
     else:
-        joke_text = get_joke(language=state.language, category=state.category)
-    
+        try:
+            llm = ChatOpenAI(model="gpt-3.5-turbo")
+            messages = [
+                SystemMessage(content="You are a funny comedian. Tell a joke based on the user's category and language. Return ONLY the joke text."),
+                HumanMessage(content=f"Tell me a {state.category} joke in {state.language}.")
+            ]
+            response = llm.invoke(messages)
+            joke_text = response.content
+        except Exception as e:
+            print(f"\n⚠️ LLM Error: {e}. Falling back to pyjokes.")
+            joke_text = get_joke(language="en", category="neutral")
+
     new_joke = Joke(text=joke_text, category=state.category)
     print(f"\n😂 {joke_text}")
     return {"jokes": [new_joke]}
