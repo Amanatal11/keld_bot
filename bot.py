@@ -11,12 +11,15 @@ class Joke(BaseModel):
     text: str
     category: str
 
-def add_jokes(left: List[Joke], right: List[Joke]) -> List[Joke]:
+def reduce_jokes(left: List[Joke], right: List[Joke]) -> List[Joke]:
+    for joke in right:
+        if joke.text == "RESET_HISTORY":
+            return []
     return left + right
 
 class JokeState(BaseModel):
-    jokes: Annotated[List[Joke], add_jokes] = []
-    jokes_choice: Literal["n", "c", "l", "q"] = "n" # next joke, change category, change language, or quit
+    jokes: Annotated[List[Joke], reduce_jokes] = []
+    jokes_choice: Literal["n", "c", "l", "r", "q"] = "n" # next joke, change category, change language, reset, or quit
     category: str = "neutral"
     language: str = "en"
     quit: bool = False
@@ -28,7 +31,7 @@ def show_menu(state: JokeState) -> dict:
     print(f"🎭 Menu | Category: {state.category.upper()} | Language: {state.language.upper()} | Jokes: {len(state.jokes)}")
     print(f"--------------------------------------------------")
     print(f"Pick an option:")
-    print(f"[n] 🎭 Next Joke  [c] 📂 Change Category  [l] 🌐 Change Language  [q] 🚪 Quit")
+    print(f"[n] 🎭 Next Joke  [c] 📂 Change Category  [l] 🌐 Change Language  [r] 🔁 Reset History  [q] 🚪 Quit")
     user_input = input("User Input: ").strip().lower()
     return {"jokes_choice": user_input}
 
@@ -75,6 +78,10 @@ def update_language(state: JokeState) -> dict:
         print("Invalid input, keeping current language.")
         return {}
 
+def reset_jokes(state: JokeState) -> dict:
+    print(f"\n🧹 Joke history has been reset!")
+    return {"jokes": [Joke(text="RESET_HISTORY", category="neutral")]}
+
 def exit_bot(state: JokeState) -> dict:
     return {"quit": True}
 
@@ -85,6 +92,8 @@ def route_choice(state: JokeState) -> str:
         return "update_category"
     elif state.jokes_choice == "l":
         return "update_language"
+    elif state.jokes_choice == "r":
+        return "reset_jokes"
     elif state.jokes_choice == "q":
         return "exit_bot"
     return "exit_bot"
@@ -98,6 +107,7 @@ def build_joke_graph() -> CompiledStateGraph:
     workflow.add_node("fetch_joke", fetch_joke)
     workflow.add_node("update_category", update_category)
     workflow.add_node("update_language", update_language)
+    workflow.add_node("reset_jokes", reset_jokes)
     workflow.add_node("exit_bot", exit_bot)
 
     workflow.set_entry_point("show_menu")
@@ -109,6 +119,7 @@ def build_joke_graph() -> CompiledStateGraph:
             "fetch_joke": "fetch_joke",
             "update_category": "update_category",
             "update_language": "update_language",
+            "reset_jokes": "reset_jokes",
             "exit_bot": "exit_bot",
         }
     )
@@ -116,6 +127,7 @@ def build_joke_graph() -> CompiledStateGraph:
     workflow.add_edge("fetch_joke", "show_menu")
     workflow.add_edge("update_category", "show_menu")
     workflow.add_edge("update_language", "show_menu")
+    workflow.add_edge("reset_jokes", "show_menu")
     workflow.add_edge("exit_bot", END)
 
     return workflow.compile()
