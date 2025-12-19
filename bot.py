@@ -1,7 +1,7 @@
 import operator
 import random
 import os
-from typing import Annotated, List, Literal, TypedDict
+from typing import Annotated, List, Literal, TypedDict, Optional
 from pydantic import BaseModel
 from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
@@ -9,6 +9,7 @@ from pyjokes import get_joke
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from dotenv import load_dotenv
+from utils import PromptBuilder
 
 load_dotenv()
 
@@ -29,6 +30,12 @@ class JokeState(BaseModel):
     category: str = "neutral"
     language: str = "en"
     quit: bool = False
+    
+    # Writer-Critic Loop State
+    current_joke: Optional[str] = None
+    critique: Optional[str] = None
+    approval_status: Literal["APPROVE", "REJECT", "PENDING"] = "PENDING"
+    retry_count: int = 0
 
 # 2. Write Your Node Functions
 
@@ -41,36 +48,80 @@ def show_menu(state: JokeState) -> dict:
     user_input = input("User Input: ").strip().lower()
     return {"jokes_choice": user_input}
 
-def fetch_joke(state: JokeState) -> dict:
-    # Check for API key
+def writer_node(state: JokeState) -> dict:
+    prompt_builder = PromptBuilder()
     api_key = os.getenv("OPENAI_API_KEY")
+    
     if not api_key:
-        print("\n⚠️ OPENAI_API_KEY not found. Falling back to pyjokes/custom list.")
-        if state.language == "am":
-            amharic_jokes = [
-                "አንድ ሰው ወደ ሐኪም ሄዶ 'ዶክተር፣ እግሬን ሳነሳ ያመኛል' አለው። ዶክተሩም 'እንግዲያውስ አታንሳው' አለው።",
-                "መምህር፡ 'አባይ ወንዝ የት ይገኛል?' ተማሪ፡ 'መሬት ላይ!'",
-                "ሚስት፡ 'ዛሬ የጋብቻ በዓላችን ነው፣ ዶሮ እንረድ?' ባል፡ 'ለተፈጠረው ስህተት ዶሮው ምን አጠፋ?'"
-            ]
-            joke_text = random.choice(amharic_jokes)
-        else:
-            joke_text = get_joke(language=state.language, category=state.category)
-    else:
-        try:
-            llm = ChatOpenAI(model="gpt-3.5-turbo")
-            messages = [
-                SystemMessage(content="You are a funny comedian. Tell a joke based on the user's category and language. Return ONLY the joke text."),
-                HumanMessage(content=f"Tell me a {state.category} joke in {state.language}.")
-            ]
-            response = llm.invoke(messages)
-            joke_text = response.content
-        except Exception as e:
-            print(f"\n⚠️ LLM Error: {e}. Falling back to pyjokes.")
-            joke_text = get_joke(language="en", category="neutral")
+        print("\n⚠️ OPENAI_API_KEY not found. Falling back to pyjokes.")
+        joke_text = get_joke(language="en", category="neutral")
+        return {
+            "current_joke": joke_text,
+            "approval_status": "APPROVE", # Skip critic if no API key
+            "retry_count": 0
+        }
 
-    new_joke = Joke(text=joke_text, category=state.category)
-    print(f"\n😂 {joke_text}")
-    return {"jokes": [new_joke]}
+    feedback = ""
+    if state.critique:
+        feedback = f"Previous attempt rejected. Critique: {state.critique}"
+    
+    prompt = prompt_builder.get_prompt(
+        "writer_prompt", 
+        category=state.category, 
+        language=state.language,
+        feedback=feedback
+    )
+    
+    try:
+        llm = ChatOpenAI(model="gpt-3.5-turbo")
+        response = llm.invoke([HumanMessage(content=prompt)])
+        joke_text = response.content.strip()
+        print(f"\n✍️  Writer generated: {joke_text}")
+        return {"current_joke": joke_text, "retry_count": state.retry_count + 1}
+    except Exception as e:
+        print(f"\n⚠️ Writer Error: {e}")
+        return {"current_joke": "Error generating joke.", "approval_status": "REJECT"}
+
+def critic_node(state: JokeState) -> dict:
+    prompt_builder = PromptBuilder()
+    api_key = os.getenv("OPENAI_API_KEY")
+    
+    if not api_key:
+        return {"approval_status": "APPROVE"} # Should be handled in writer, but safe guard
+
+    prompt = prompt_builder.get_prompt(
+        "critic_prompt",
+        joke=state.current_joke,
+        category=state.category
+    )
+    
+    try:
+        llm = ChatOpenAI(model="gpt-3.5-turbo")
+        response = llm.invoke([HumanMessage(content=prompt)])
+        result = response.content.strip()
+        
+        if result.startswith("APPROVE"):
+            print(f"🕵️  Critic Approved!")
+            return {"approval_status": "APPROVE", "critique": None}
+        else:
+            critique = result.replace("REJECT", "").strip()
+            print(f"🕵️  Critic Rejected: {critique}")
+            return {"approval_status": "REJECT", "critique": critique}
+    except Exception as e:
+        print(f"\n⚠️ Critic Error: {e}")
+        return {"approval_status": "APPROVE"} # Fail open if critic dies
+
+def deliver_joke(state: JokeState) -> dict:
+    print(f"\n🎉 Final Joke: {state.current_joke}")
+    new_joke = Joke(text=state.current_joke, category=state.category)
+    # Reset loop state for next time
+    return {
+        "jokes": [new_joke], 
+        "current_joke": None, 
+        "critique": None, 
+        "approval_status": "PENDING", 
+        "retry_count": 0
+    }
 
 def update_category(state: JokeState) -> dict:
     categories = ["neutral", "chuck", "all"]
@@ -78,7 +129,14 @@ def update_category(state: JokeState) -> dict:
     try:
         selection = int(input("> ").strip())
         if 0 <= selection < len(categories):
-            return {"category": categories[selection]}
+            # Reset loop state when category changes
+            return {
+                "category": categories[selection],
+                "current_joke": None,
+                "critique": None,
+                "approval_status": "PENDING",
+                "retry_count": 0
+            }
         else:
             print("Invalid selection, keeping current category.")
             return {}
@@ -102,14 +160,20 @@ def update_language(state: JokeState) -> dict:
 
 def reset_jokes(state: JokeState) -> dict:
     print(f"\n🧹 Joke history has been reset!")
-    return {"jokes": [Joke(text="RESET_HISTORY", category="neutral")]}
+    return {
+        "jokes": [Joke(text="RESET_HISTORY", category="neutral")],
+        "current_joke": None,
+        "critique": None,
+        "approval_status": "PENDING",
+        "retry_count": 0
+    }
 
 def exit_bot(state: JokeState) -> dict:
     return {"quit": True}
 
 def route_choice(state: JokeState) -> str:
     if state.jokes_choice == "n":
-        return "fetch_joke"
+        return "writer_node"
     elif state.jokes_choice == "c":
         return "update_category"
     elif state.jokes_choice == "l":
@@ -120,13 +184,24 @@ def route_choice(state: JokeState) -> str:
         return "exit_bot"
     return "exit_bot"
 
+def route_critique(state: JokeState) -> str:
+    if state.approval_status == "APPROVE":
+        return "deliver_joke"
+    elif state.retry_count >= 5:
+        print(f"\n⚠️ Max retries reached. Delivering best effort.")
+        return "deliver_joke"
+    else:
+        return "writer_node"
+
 # Steps 3 & 4. Create the Graph and Add Nodes + Edges
 
 def build_joke_graph() -> CompiledStateGraph:
     workflow = StateGraph(JokeState)
 
     workflow.add_node("show_menu", show_menu)
-    workflow.add_node("fetch_joke", fetch_joke)
+    workflow.add_node("writer_node", writer_node)
+    workflow.add_node("critic_node", critic_node)
+    workflow.add_node("deliver_joke", deliver_joke)
     workflow.add_node("update_category", update_category)
     workflow.add_node("update_language", update_language)
     workflow.add_node("reset_jokes", reset_jokes)
@@ -138,7 +213,7 @@ def build_joke_graph() -> CompiledStateGraph:
         "show_menu",
         route_choice,
         {
-            "fetch_joke": "fetch_joke",
+            "writer_node": "writer_node",
             "update_category": "update_category",
             "update_language": "update_language",
             "reset_jokes": "reset_jokes",
@@ -146,7 +221,18 @@ def build_joke_graph() -> CompiledStateGraph:
         }
     )
 
-    workflow.add_edge("fetch_joke", "show_menu")
+    workflow.add_edge("writer_node", "critic_node")
+    
+    workflow.add_conditional_edges(
+        "critic_node",
+        route_critique,
+        {
+            "deliver_joke": "deliver_joke",
+            "writer_node": "writer_node"
+        }
+    )
+
+    workflow.add_edge("deliver_joke", "show_menu")
     workflow.add_edge("update_category", "show_menu")
     workflow.add_edge("update_language", "show_menu")
     workflow.add_edge("reset_jokes", "show_menu")
