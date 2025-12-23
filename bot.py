@@ -17,6 +17,7 @@ load_dotenv()
 class Joke(BaseModel):
     text: str
     category: str
+    rating: Optional[int] = None
 
 def reduce_jokes(left: List[Joke], right: List[Joke]) -> List[Joke]:
     for joke in right:
@@ -40,8 +41,14 @@ class JokeState(BaseModel):
 # 2. Write Your Node Functions
 
 def show_menu(state: JokeState) -> dict:
+    avg_rating = "N/A"
+    rated_jokes = [j.rating for j in state.jokes if j.rating is not None]
+    if rated_jokes:
+        avg_rating = f"{sum(rated_jokes) / len(rated_jokes):.1f}⭐"
+
     print(f"\n============================================================")
-    print(f"🎭 Menu | Category: {state.category.upper()} | Language: {state.language.upper()} | Jokes: {len(state.jokes)}")
+    print(f"🎭 Menu | Category: {state.category.upper()} | Language: {state.language.upper()}")
+    print(f"📊 Stats: {len(state.jokes)} jokes | Avg Rating: {avg_rating}")
     print(f"--------------------------------------------------")
     print(f"Pick an option:")
     print(f"[n] 🎭 Next Joke  [c] 📂 Change Category  [l] 🌐 Change Language  [r] 🔁 Reset History  [q] 🚪 Quit")
@@ -113,7 +120,25 @@ def critic_node(state: JokeState) -> dict:
 
 def deliver_joke(state: JokeState) -> dict:
     print(f"\n🎉 Final Joke: {state.current_joke}")
-    new_joke = Joke(text=state.current_joke, category=state.category)
+    return {}
+
+def rate_joke(state: JokeState) -> dict:
+    print(f"\n⭐ Rate this joke (1-5 stars, or press Enter to skip):")
+    try:
+        user_input = input("> ").strip()
+        if not user_input:
+            rating = None
+        else:
+            rating = int(user_input)
+            if not (1 <= rating <= 5):
+                print("Invalid rating, skipping.")
+                rating = None
+    except ValueError:
+        print("Invalid input, skipping.")
+        rating = None
+
+    new_joke = Joke(text=state.current_joke, category=state.category, rating=rating)
+    
     # Reset loop state for next time
     return {
         "jokes": [new_joke], 
@@ -202,6 +227,7 @@ def build_joke_graph() -> CompiledStateGraph:
     workflow.add_node("writer_node", writer_node)
     workflow.add_node("critic_node", critic_node)
     workflow.add_node("deliver_joke", deliver_joke)
+    workflow.add_node("rate_joke", rate_joke)
     workflow.add_node("update_category", update_category)
     workflow.add_node("update_language", update_language)
     workflow.add_node("reset_jokes", reset_jokes)
@@ -232,7 +258,8 @@ def build_joke_graph() -> CompiledStateGraph:
         }
     )
 
-    workflow.add_edge("deliver_joke", "show_menu")
+    workflow.add_edge("deliver_joke", "rate_joke")
+    workflow.add_edge("rate_joke", "show_menu")
     workflow.add_edge("update_category", "show_menu")
     workflow.add_edge("update_language", "show_menu")
     workflow.add_edge("reset_jokes", "show_menu")
