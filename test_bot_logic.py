@@ -34,7 +34,7 @@ class TestJokeBot(unittest.TestCase):
         # However, testing the whole graph end-to-end with input() is tricky.
         # Let's test the nodes individually or mock input() to select 'n' (next joke) then 'q' (quit).
         
-        with patch('builtins.input', side_effect=['n', 'q']): 
+        with patch('builtins.input', side_effect=['n', '5', 'q']): 
             initial_state = JokeState(category="neutral", language="en")
             final_state = graph.invoke(initial_state)
             
@@ -76,7 +76,7 @@ class TestJokeBot(unittest.TestCase):
 
         graph = build_joke_graph()
         
-        with patch('builtins.input', side_effect=['n', 'q']):
+        with patch('builtins.input', side_effect=['n', '5', 'q']):
             initial_state = JokeState()
             final_state = graph.invoke(initial_state)
             
@@ -107,7 +107,7 @@ class TestJokeBot(unittest.TestCase):
 
         graph = build_joke_graph()
         
-        with patch('builtins.input', side_effect=['n', 'q']):
+        with patch('builtins.input', side_effect=['n', '5', 'q']):
             initial_state = JokeState()
             final_state = graph.invoke(initial_state)
             
