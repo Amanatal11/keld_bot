@@ -52,8 +52,11 @@ def show_menu(state: JokeState) -> dict:
     print(f"--------------------------------------------------")
     print(f"Pick an option:")
     print(f"[n] 🎭 Next Joke  [c] 📂 Change Category  [l] 🌐 Change Language  [r] 🔁 Reset History  [q] 🚪 Quit")
-    user_input = input("User Input: ").strip().lower()
-    return {"jokes_choice": user_input}
+    while True:
+        user_input = input("User Input: ").strip().lower()
+        if user_input in ["n", "c", "l", "r", "q"]:
+            return {"jokes_choice": user_input}
+        print(f"Invalid input '{user_input}'. Please enter one of [n, c, l, r, q].")
 
 def writer_node(state: JokeState) -> dict:
     prompt_builder = PromptBuilder()
@@ -86,8 +89,14 @@ def writer_node(state: JokeState) -> dict:
         print(f"\n✍️  Writer generated: {joke_text}")
         return {"current_joke": joke_text, "retry_count": state.retry_count + 1}
     except Exception as e:
-        print(f"\n⚠️ Writer Error: {e}")
-        return {"current_joke": "Error generating joke.", "approval_status": "REJECT"}
+        print(f"\n⚠️ Writer API Error: {e}")
+        print("🔄 Falling back to local pyjokes.")
+        joke_text = get_joke(language="en", category="neutral")
+        return {
+            "current_joke": joke_text,
+            "approval_status": "APPROVE",
+            "retry_count": 0
+        }
 
 def critic_node(state: JokeState) -> dict:
     prompt_builder = PromptBuilder()
@@ -115,7 +124,8 @@ def critic_node(state: JokeState) -> dict:
             print(f"🕵️  Critic Rejected: {critique}")
             return {"approval_status": "REJECT", "critique": critique}
     except Exception as e:
-        print(f"\n⚠️ Critic Error: {e}")
+        print(f"\n⚠️ Critic API Error: {e}")
+        print("🔓 Critic failing open (approving).")
         return {"approval_status": "APPROVE"} # Fail open if critic dies
 
 def deliver_joke(state: JokeState) -> dict:
